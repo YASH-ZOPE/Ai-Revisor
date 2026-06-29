@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from utils.pdf_reader import extract_text_from_pdf
 from utils.docx_reader import extract_text_from_docx
 from utils.markdown_reader import extract_text_from_markdown
-from utils.ai_helper import get_revision_data, RevisionData
+from utils.ai_helper import get_revision_data, RevisionData, get_mock_revision_data
 
 # Load environment variables
 load_dotenv()
@@ -239,18 +239,57 @@ with st.sidebar:
     )
     
     api_key = user_api_key if user_api_key else env_api_key
-    
     # Model configuration
+    default_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-2.5-pro"]
+    available_models = default_models
+    
+    if api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model_list = genai.list_models()
+            fetched_models = []
+            for m in model_list:
+                if "generateContent" in m.supported_generation_methods:
+                    name = m.name.replace("models/", "")
+                    if "gemini" in name:
+                        fetched_models.append(name)
+            if fetched_models:
+                unique_models = sorted(list(set(fetched_models)))
+                # Filter out utility/embedding models to keep it clean
+                filtered_models = [m for m in unique_models if "embedding" not in m and "vision" not in m and "text-to-image" not in m]
+                if filtered_models:
+                    available_models = filtered_models
+                else:
+                    available_models = unique_models
+        except Exception:
+            pass
+
+    # Find the best default index (prefer models with highest free-tier quota availability)
+    default_idx = 0
+    for pref in ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]:
+        if pref in available_models:
+            default_idx = available_models.index(pref)
+            break
+
     model_name = st.selectbox(
         "AI Model",
-        options=["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"],
-        index=0,
-        help="gemini-1.5-flash is fast and recommended for general documents."
+        options=available_models,
+        index=default_idx,
+        help="Select the AI model. 2.0/2.5-flash are fast and recommended."
+    )
+    
+    st.markdown("---")
+    st.markdown("### Demo / Offline Mode")
+    use_demo = st.checkbox(
+        "✨ Use Demo / Mock Mode",
+        value=False,
+        help="Check this to test the application with sample Python study materials without an API Key."
     )
     
     st.markdown("---")
     st.markdown("### How to use:")
-    st.write("1. Provide your Gemini API key above.")
+    st.write("1. Provide your Gemini API key above or enable Demo Mode.")
     st.write("2. Go to the **Upload** tab and drop your PDF, DOCX, TXT, or MD file.")
     st.write("3. Click **Generate Study Material**.")
     st.write("4. Navigate the tabs to revise!")
@@ -344,8 +383,14 @@ with tab_upload:
         
         # Prompt model generation
         if st.button("🚀 Generate Study Material", type="primary"):
-            if not api_key:
-                st.warning("Please provide a Google Gemini API Key in the sidebar to proceed.")
+            if use_demo:
+                with st.spinner("✨ Generating sample Python revision materials..."):
+                    st.session_state.revision_data = get_mock_revision_data()
+                    st.session_state.file_name = "demo_python_basics.txt"
+                    st.balloons()
+                    st.success("🎉 Demo revision materials loaded! Use the tabs above to start revising.")
+            elif not api_key:
+                st.warning("Please provide a Google Gemini API Key in the sidebar or check 'Use Demo / Mock Mode' to proceed.")
             elif not st.session_state.extracted_text:
                 st.error("File seems to contain no extractable text. Please try a different file.")
             else:
@@ -364,9 +409,22 @@ with tab_upload:
                         st.balloons()
                         st.success("🎉 Revision materials generated successfully! Use the tabs above to start revising.")
                     except Exception as e:
-                        st.error(f"AI Generation Failed: {str(e)}")
+                        error_msg = str(e)
+                        if "quota" in error_msg.lower() or "429" in error_msg:
+                            st.error("⚠️ **AI Generation Failed: Gemini API quota exceeded.**\n\n**Tip:** Please select **`gemini-2.0-flash`** or **`gemini-2.0-flash-lite`** from the **AI Model** dropdown in the sidebar! Different models have separate daily quotas.")
+                        else:
+                            st.error(f"AI Generation Failed: {error_msg}")
     else:
-        st.info("Please upload a file above to begin.")
+        if use_demo:
+            st.info("💡 **Demo Mode is Active:** Click 'Generate Study Material' below to load sample Python programming study materials instantly without uploading a file or entering an API Key.")
+            if st.button("🚀 Generate Demo Material", type="primary", key="demo_mode_button"):
+                with st.spinner("✨ Loading sample Python revision materials..."):
+                    st.session_state.revision_data = get_mock_revision_data()
+                    st.session_state.file_name = "demo_python_basics.txt"
+                    st.balloons()
+                    st.success("🎉 Demo revision materials loaded! Use the tabs above to start revising.")
+        else:
+            st.info("Please upload a file above to begin.")
 
 # ====================================================
 # TAB 2: Summary & Revision Sheets
